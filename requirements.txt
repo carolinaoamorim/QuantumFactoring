@@ -3,5 +3,6 @@ qiskit-aer>=0.15
 qiskit-ibm-runtime>=0.40
 numpy>=1.26
 matplotlib>=3.8
+polars>=1.0
 pylatexenc>=2.10
 notebook>=7.0

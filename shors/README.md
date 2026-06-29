@@ -1,11 +1,17 @@
-# Shor's Algorithm — N = 15
+# Shor's Algorithm — N = 15 and N = 21
 
-An implementation of Shor's factoring algorithm for N = 15, built on a Qiskit
-Runtime harness that runs **both** on the local `AerSimulator` and on **real IBM
-Quantum hardware** through the same code path.
+An implementation of Shor's factoring algorithm for N = 15 and N = 21, built on a
+Qiskit Runtime harness that runs **both** on the local `AerSimulator` and on
+**real IBM Quantum hardware** through the same code path.
 
 The inverse QFT, the controlled modular-multiplication gates, the order-finding
 circuit, and the classical wrapper are all built from scratch.
+
+For **N = 15** the modular multiplication collapses to a tidy swap network
+(`c_amod15`). For **N = 21** (and any other N) the residues no longer permute so
+neatly, so the controlled map `|y> -> |a^(2^k)·y mod N>` is built directly as a
+permutation unitary (`c_amod`). Everything downstream — the order-finding circuit,
+inverse QFT, and classical wrapper — is shared.
 
 ---
 
@@ -34,15 +40,16 @@ Five of the six steps are classical; only order-finding is quantum.
    Otherwise retry with a new `a`.
 
 **Quantum order-finding circuit** (`build_order_finding_circuit`) — three blocks,
-12 qubits total (8 counting + 4 work):
-- **Counting register** (8 qubits) put into uniform superposition with Hadamards.
-- **Controlled-Uₐ blocks** (`c_amod15`): `count[k]` controls multiplication by
-  `a^(2^k) mod 15` on the work register.
+`n_count` counting qubits + `ceil(log2 N)` work qubits (12 qubits for N=15 with 8
+counting):
+- **Counting register** put into uniform superposition with Hadamards.
+- **Controlled-Uₐ blocks**: `count[k]` controls multiplication by `a^(2^k) mod N`
+  on the work register (`c_amod15` for N=15, `c_amod` otherwise).
 - **Inverse QFT** (`inverse_qft`, hand-built) on the counting register, then measure.
 
 This is standard quantum phase estimation: the counting register reads out a
 phase ≈ s/r, from which the classical step extracts `r`. For a correct order-4
-base (e.g. `a=2`), the phase peaks land cleanly at multiples of 256/4 = 64
+base (e.g. `a=2`, N=15), the phase peaks land cleanly at multiples of 256/4 = 64
 (i.e. 0, 64, 128, 192).
 
 ### The N=15 modular-multiplication trick
@@ -60,6 +67,16 @@ of the residue:
 multiplicative orbit, so the unused `|0>↔|15>` swap that the X-all flip introduces
 is harmless.)
 
+### The general case (N=21 and beyond)
+
+When the swap trick no longer applies, `c_amod(a, power, N)` builds the controlled
+map straight from its permutation matrix: `|y> → |a^power · y mod N>` is a
+permutation of the residues, so we reduce `a^power mod N` classically and emit a
+single permutation unitary on `ceil(log2 N)` work qubits. Because the exponent is
+reduced first, one gate covers even large `2^k` powers. `analyze_base` and the
+`results/base_comparison.md` table use this path to compare bases for N=21
+(e.g. `a=8` order 2 vs `a=2` order 6), both factoring `21 = 3 × 7`.
+
 ---
 
 ## Setup
@@ -74,16 +91,20 @@ pip install -r ../requirements.txt
 python3 shor_factoring.py
 ```
 
-The `__main__` block factors 15 on `AerSimulator`, prints the recovered factors,
-and prints the order and phase peaks for `a=7`. Expected output:
+The `__main__` block factors **15** (hand-built gates) and **21** (general gates)
+on `AerSimulator` and prints the recovered factors and peaks. Expected output:
 
-```
+```text
 factors: (3, 5)
-order r for a=7: 4
+order r for a=7 mod 15: 4
 top peaks: [('01000000', ...), ('00000000', ...), ('10000000', ...), ('11000000', ...)]
+
+factors: (3, 7)
+a=8 mod 21 -> order 2 factors (7, 3)
 ```
 
-i.e. clean spikes at measured values 0, 64, 128, 192.
+i.e. for N=15 clean spikes at measured values 0, 64, 128, 192, and N=21 factored
+via the order-2 base `a=8`.
 
 ### Run on the IBM hardware
 

@@ -38,10 +38,7 @@ Then get a backend with:
 ----------------------------------------------------------------------
 """
 
-# ======================================================================
 # HARNESS  --  backend-agnostic. Pass AerSimulator() for dev, or an IBM
-# backend for the real run; nothing else changes.
-# ======================================================================
 def run_circuit_and_get_counts(circuit, backend, shots=1024):
     """Run a circuit on any backend (sim or real HW) and return counts."""
     pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
@@ -52,9 +49,7 @@ def run_circuit_and_get_counts(circuit, backend, shots=1024):
     return result[0].data.c.get_counts()   # 'c' = our ClassicalRegister name
 
 
-# ======================================================================
-# 1. INVERSE QFT  --  hand-built. The core "from scratch" piece.
-# ======================================================================
+# 1. INVERSE QFT
 def inverse_qft(circuit, qubits):
     """In-place inverse QFT on the list `qubits`."""
     n = len(qubits)
@@ -67,13 +62,11 @@ def inverse_qft(circuit, qubits):
     return circuit
 
 
-# ======================================================================
 # 2. CONTROLLED MODULAR MULTIPLICATION  a^power mod 15
 #    For N=15 the controlled-U reduces to a swap network plus X gates.
 #    Work-qubit convention: qubit 0 is the LSB of the 4-bit residue.
 #    The swaps alone permute |y> -> |2y mod 15> (or the |8y> inverse);
 #    the X-all flip on {7,11,13} supplies the extra y -> 15-y those need.
-# ======================================================================
 def c_amod15(a, power):
     if a not in (2, 4, 7, 8, 11, 13):
         raise ValueError("a must be one of 2,4,7,8,11,13 for N=15")
@@ -97,14 +90,12 @@ def n_work_qubits(N):
     """Work-register width: enough qubits to hold residues 0..N-1."""
     return max(1, ceil(log2(N)))
 
-
-# ======================================================================
 # 2b. GENERAL CONTROLLED MODULAR MULTIPLICATION  a^power mod N
 #    Works for any N (e.g. N=21). The map |y> -> |a^power * y mod N> is a
 #    permutation of the residues, so we build it directly as a permutation
 #    unitary. a^power is reduced classically first, so a single gate covers
 #    even large powers -- no need to repeat the multiply 2^k times.
-# ======================================================================
+
 def c_amod(a, power, N, n_work=None):
     if n_work is None:
         n_work = n_work_qubits(N)
@@ -119,11 +110,9 @@ def c_amod(a, power, N, n_work=None):
     return U.to_gate().control()
 
 
-# ======================================================================
 # 3. ORDER-FINDING CIRCUIT (phase estimation).
 #    n_count counting qubits + ceil(log2 N) work qubits.
-#    N=15 uses the hand-built swap network; other N use the general unitary.
-# ======================================================================
+#    N=15 uses the hand-built swap network; other N uses the general unitary.
 def build_order_finding_circuit(a, N=15, n_count=8):
     n_work = n_work_qubits(N)
     count = QuantumRegister(n_count, "count")
@@ -144,9 +133,7 @@ def build_order_finding_circuit(a, N=15, n_count=8):
     return qc
 
 
-# ======================================================================
 # 4. CLASSICAL WRAPPER
-# ======================================================================
 def order_from_counts(counts, a, N, n_count):
     """Recover the order r of a mod N from measured phases via continued fractions.
     Tries successively larger denominator caps so divisors of r are caught too."""
@@ -173,10 +160,10 @@ def shor(backend, N=15, n_count=8, max_tries=12):
     if N % 2 == 0:
         return (2, N // 2)
     for _ in range(max_tries):
-        # N=15 only has hand-built gates for these coprime bases; otherwise pick freely.
+        # N=15 only has hand-built gates for these coprime bases
         a = random.choice([2, 7, 8, 11, 13]) if N == 15 else random.randrange(2, N)
         g = gcd(a, N)
-        if g != 1:                                 # lucky guess: a shares a factor
+        if g != 1:
             return (g, N // g)
         r, _ = find_order(a, backend, N=N, n_count=n_count)
         if r is None or r % 2 != 0:
@@ -220,7 +207,7 @@ def analyze_base(a, backend, N=21, n_count=3, shots=2000):
 
 if __name__ == "__main__":
     random.seed(2)
-    backend = AerSimulator()                       # swap for an IBM backend later
+    backend = AerSimulator()                       # TODO swap for an IBM backend later
 
     print("Factoring 15 on", backend, "...")
     print("factors:", shor(backend, N=15))

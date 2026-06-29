@@ -35,10 +35,7 @@ from qiskit_aer.noise import (
 SHOTS = 4096
 RANDOM_SEED = 42
 
-
-# ======================================================================
-# STAGE 1-2: MANUAL QFT AND INVERSE QFT
-# ======================================================================
+# STAGE 1 & 2: MANUAL QFT AND INVERSE QFT
 def qft(n):
     """Manual QFT on n qubits: Hadamards + controlled-phase ladder + swaps."""
     circuit = QuantumCircuit(n)
@@ -47,7 +44,7 @@ def qft(n):
         for k in reversed(range(j)):
             angle = pi / (2 ** (j - k))            # Step 2: controlled rotations
             circuit.cp(angle, k, j)
-        circuit.barrier()                          # barriers are visual only
+        circuit.barrier()                          # barriers are for visual only
     for i in range(n // 2):                        # Step 3: bit-reversal swaps
         circuit.swap(i, n - 1 - i)
     return circuit
@@ -67,9 +64,7 @@ def inverse_qft(n):
     return circuit
 
 
-# ======================================================================
 # STAGE 9: APPROXIMATE QFT (drop controlled rotations below a threshold)
-# ======================================================================
 def approximate_qft(n, min_angle=pi / 16):
     """QFT with controlled rotations smaller than `min_angle` removed."""
     circuit = QuantumCircuit(n)
@@ -101,9 +96,7 @@ def approximate_inverse_qft(n, min_angle=pi / 16):
     return circuit
 
 
-# ======================================================================
 # STAGE 3: IDEAL VALIDATION AGAINST QISKIT'S BUILT-IN QFT
-# ======================================================================
 def strip_barriers(circuit):
     """Return a copy of `circuit` without barriers (so Operator/Statevector
     comparisons work cleanly). Barriers are visual only."""
@@ -159,9 +152,7 @@ def round_trip_fidelity(n, input_integer):
     return state_fidelity(initial, final)
 
 
-# ======================================================================
 # STAGE 5: KNOWN-PERIOD STATE (isolate QFT behavior from mod-exp errors)
-# ======================================================================
 def periodic_statevector(n, period, offset=0):
     """Uniform superposition over |offset>, |offset+period>, ... — known period."""
     dimension = 2 ** n
@@ -191,9 +182,7 @@ def qft_distribution_for_periodic_state(n, period, offset=0):
     return np.abs(output.data) ** 2
 
 
-# ======================================================================
 # STAGE 6: NOISE MODELS
-# ======================================================================
 def create_depolarizing_noise_model(one_qubit_error, two_qubit_error):
     """Depolarizing noise for general gate imperfections."""
     noise_model = NoiseModel()
@@ -235,9 +224,7 @@ def get_noise_model(noise_type, noise_level):
     raise ValueError(f"Unknown noise type: {noise_type}")
 
 
-# ======================================================================
 # DISTRIBUTION METRICS
-# ======================================================================
 def counts_to_probability_vector(counts, n):
     """Convert Qiskit counts into a length-2^n probability vector."""
     dimension = 2 ** n
@@ -302,9 +289,7 @@ def summarize_peak_behavior(probability_vector, expected_peaks):
     }
 
 
-# ======================================================================
 # STAGE 7: PERIOD RECONSTRUCTION (continued fractions)
-# ======================================================================
 def candidate_period_from_measurement(measured_integer, n, max_denominator):
     """Approximate y / 2^n by a rational and return its denominator (candidate r)."""
     if measured_integer == 0:
@@ -331,10 +316,7 @@ def estimated_period_success_from_distribution(probability_vector, n, true_perio
             success += probability
     return float(success)
 
-
-# ======================================================================
 # KNOWN-PERIOD INVERSE-QFT EXPERIMENT (ideal vs noisy)
-# ======================================================================
 def build_periodic_iqft_circuit(n, period, offset=0):
     """Prepare a known-period state, apply the manual inverse QFT, and measure."""
     return build_periodic_iqft_circuit_with_custom_iqft(n, period, inverse_qft, offset)
@@ -393,8 +375,7 @@ def run_periodic_qft_experiment(n, period, noise_type, noise_level):
     }
 
 
-def run_exact_vs_approx_experiment(n, period, qft_label, iqft_builder,
-                                   noise_type, noise_level):
+def run_exact_vs_approx_experiment(n, period, qft_label, iqft_builder, noise_type, noise_level):
     """Compare an exact vs approximate inverse QFT under the same noise."""
     circuit = build_periodic_iqft_circuit_with_custom_iqft(n, period, iqft_builder)
     ideal_circuit = build_periodic_iqft_circuit_with_custom_iqft(n, period, inverse_qft)
@@ -423,11 +404,8 @@ def run_exact_vs_approx_experiment(n, period, qft_label, iqft_builder,
         ),
     }
 
-
-# ======================================================================
 # STAGE 8: MANUAL INVERSE QFT INSIDE SHOR (N = 15, a = 2, r = 4)
 # Expected 8-qubit control peaks: 0, 64, 128, 192.
-# ======================================================================
 def multiply_by_2_mod_15():
     """|x> -> |2x mod 15> on a 4-qubit register (swap network)."""
     circuit = QuantumCircuit(4, name="M_2 mod 15")

@@ -48,18 +48,28 @@ precision for a shallower circuit.
   damping (loss of phase coherence), and readout error — each in isolation, plus a
   **combined** model (`create_combined_noise_model`) that stacks all three at once
   (depolarizing and phase damping *composed* on every gate, readout on top), the way
-  a real device sees them. The robustness sweep runs **3–7 qubits** over a wider,
+  a real device sees them. The robustness sweep runs **3–8 qubits** over a wider,
   finer noise range with **repeated noise draws** so the plots carry error bars, and
   a dedicated section compares the combined model against each isolated channel.
 - **Distribution metrics**: total-variation distance and Hellinger fidelity
-  measure global histogram change; `peak_probability` and
+  measure global histogram change; `peak_probability`, `mean_peak_width`, and
   `estimated_period_success_from_distribution` measure whether the output is
   still *useful* for order recovery.
 - **Period reconstruction** (`candidate_period_from_measurement`): continued
   fractions turn a measured `y / 2^n` into a candidate order.
+- **Order and factoring success** (`shor_success_rates`,
+  `run_shor_success_experiment`): on the `N=15` Shor circuit, each measurement is
+  scored for a *verified* multiplicative order (`base^r ≡ 1 mod N`) and for
+  gcd-based factoring (`gcd(base^{r/2} ± 1, N)`), carrying the manual-IQFT noise
+  study all the way through to end-to-end factoring. The combined channel uses
+  Aer's density-matrix method, which stays stable where the default path fails on
+  the deeper circuit.
+- **Reproducibility**: the notebook writes each sweep table to CSV so the figures
+  and interpretations can be regenerated from stored data.
 
 A recurring finding: period recovery often survives well past the point where the
-full distribution has visibly degraded.
+full distribution has visibly degraded, and verified-order/factoring success falls
+in the same channel order (depolarizing and combined fastest, phase damping slowest).
 
 ---
 

@@ -9,16 +9,18 @@ study how noise in the inverse QFT degrades period recovery in Shor's algorithm:
   * validation against Qiskit's built-in QFT (unitary equality up to global phase),
   * noise models (depolarizing, phase damping, readout, and a combined model
     stacking all three), with a decompose-first runner for the combined case,
-  * distribution metrics (total-variation distance, Hellinger fidelity, peak mass),
+  * distribution metrics (total-variation distance, Hellinger fidelity, peak mass
+    and peak width),
   * period reconstruction via continued fractions,
-  * the manual inverse QFT dropped into an N=15 Shor order-finding circuit.
+  * the manual inverse QFT dropped into an N=15 Shor order-finding circuit, scored
+    end-to-end for verified-order recovery and gcd-based factoring success.
 
 This module holds the library functions; `qft_constructions.ipynb` imports them
 and runs the experiments and plots.
 """
 
 from fractions import Fraction
-from math import pi
+from math import gcd, pi
 
 import numpy as np
 
@@ -306,6 +308,33 @@ def top_measurement(probability_vector):
     return int(np.argmax(probability_vector))
 
 
+def peak_half_max_width(probability_vector, peak):
+    """Full width at half maximum around a single peak, in bins.
+
+    Walks outward (circularly) from `peak` while the probability stays at or above
+    half the peak height, and returns the span covered. A sharp ideal peak has
+    width 1; noise broadens the peak, so this grows as coherence is lost.
+    """
+    dimension = len(probability_vector)
+    half_height = probability_vector[peak] / 2.0
+    if half_height <= 0:
+        return 0
+    width = 1
+    for direction in (1, -1):
+        step = 1
+        while step < dimension and probability_vector[(peak + direction * step) % dimension] >= half_height:
+            width += 1
+            step += 1
+    return width
+
+
+def mean_peak_width(probability_vector, peaks):
+    """Average half-max width across the expected peak locations."""
+    if len(peaks) == 0:
+        return 0.0
+    return float(np.mean([peak_half_max_width(probability_vector, peak) for peak in peaks]))
+
+
 def closest_expected_peak_distance(measured_peak, expected_peaks, dimension):
     """Circular distance from a measured peak to the nearest expected peak."""
     distances = []
@@ -450,6 +479,7 @@ def run_periodic_qft_experiment(n, period, noise_type, noise_level, seed=RANDOM_
         "hellinger_fidelity": float(hellinger_fidelity(ideal, noisy)),
         "peak_probability_window_0": peak_probability(noisy, peaks, window=0),
         "peak_probability_window_1": peak_probability(noisy, peaks, window=1),
+        "mean_peak_width": mean_peak_width(noisy, peaks),
         "period_success_probability": estimated_period_success_from_distribution(
             noisy, n, period
         ),
@@ -536,9 +566,93 @@ def run_shor_manual_iqft(noise_type="ideal", noise_level=0.0):
     """Run the N=15 Shor circuit with the manual inverse QFT; return (counts, compiled)."""
     circuit = build_shor_n15_manual_iqft()
     noise_model = get_noise_model(noise_type, noise_level)
-    backend = AerSimulator(noise_model=noise_model)
+    # The stacked combined channel makes Aer's default statevector path diagonalize a
+    # near-singular superoperator and crash ("heevx" / non-hermitian) on this deeper
+    # circuit; the density-matrix method applies the Kraus operators directly and stays
+    # stable. Isolated channels run fine on the default (faster) path.
+    method = "density_matrix" if noise_type == "combined" else "automatic"
+    backend = AerSimulator(noise_model=noise_model, method=method)
     compiled = transpile(
         circuit, backend, optimization_level=1, seed_transpiler=RANDOM_SEED
     )
     result = backend.run(compiled, shots=SHOTS, seed_simulator=RANDOM_SEED).result()
     return result.get_counts(), compiled
+
+
+# ORDER AND FACTORING SUCCESS FROM SHOR MEASUREMENTS
+# The period-recovery metric above only asks whether a measurement pins the known
+# period. The end-to-end question Shor actually cares about is stricter: does a
+# measurement yield a *verified* multiplicative order (base^r = 1 mod N), and does
+# that order then produce genuine factors of N via gcd(base^(r/2) +/- 1, N)?
+def verified_order_from_phase(measured_integer, num_control, base, modulus):
+    """Recover a verified multiplicative order from one Shor control measurement.
+
+    The measurement encodes a phase measured_integer / 2^num_control ~ j / r.
+    Continued fractions give a candidate denominator, but noise (or a j sharing a
+    factor with r) can return only a divisor of the true order, so we accept the
+    smallest multiple of that denominator that actually satisfies base^r = 1
+    (mod modulus). Returns None when nothing verifies.
+    """
+    denominator = candidate_period_from_measurement(measured_integer, num_control, modulus)
+    if denominator is None:
+        return None
+    order = denominator
+    while order < modulus:
+        if pow(base, order, modulus) == 1:
+            return order
+        order += denominator
+    return None
+
+
+def factors_from_verified_order(base, order, modulus):
+    """Nontrivial factor pair from an even verified order, via gcd(base^(r/2) +/- 1, N).
+
+    Returns None for an odd order or when base^(r/2) = +/-1 (mod N), which only
+    yields the trivial factors 1 and modulus.
+    """
+    if order is None or order % 2 != 0:
+        return None
+    root = pow(base, order // 2, modulus)
+    if root in (1, modulus - 1):
+        return None
+    candidate_factors = {gcd(root - 1, modulus), gcd(root + 1, modulus)}
+    nontrivial = sorted(factor for factor in candidate_factors if 1 < factor < modulus)
+    if not nontrivial:
+        return None
+    return tuple(nontrivial)
+
+
+def shor_success_rates(counts, num_control, base, modulus):
+    """Order-recovery and factoring success as fractions of the measured shots.
+
+    order_recovery_rate: shot mass whose measurement yields a verified order.
+    factoring_rate: shot mass that further yields a nontrivial factor of N.
+    """
+    total = sum(counts.values())
+    if total == 0:
+        return {"order_recovery_rate": 0.0, "factoring_rate": 0.0}
+    order_mass = 0
+    factor_mass = 0
+    for bitstring, count in counts.items():
+        measured_integer = int(bitstring.replace(" ", ""), 2)
+        order = verified_order_from_phase(measured_integer, num_control, base, modulus)
+        if order is None:
+            continue
+        order_mass += count
+        if factors_from_verified_order(base, order, modulus) is not None:
+            factor_mass += count
+    return {
+        "order_recovery_rate": order_mass / total,
+        "factoring_rate": factor_mass / total,
+    }
+
+
+def run_shor_success_experiment(noise_type, noise_level, base=2, modulus=15, num_control=8):
+    """Run the N=15 manual-IQFT Shor circuit and score order/factoring success."""
+    counts, compiled = run_shor_manual_iqft(noise_type, noise_level)
+    return {
+        "noise_type": noise_type,
+        "noise_level": noise_level,
+        "transpiled_depth": compiled.depth(),
+        **shor_success_rates(counts, num_control, base, modulus),
+    }

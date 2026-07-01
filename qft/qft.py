@@ -7,7 +7,8 @@ study how noise in the inverse QFT degrades period recovery in Shor's algorithm:
 
   * manual `qft` / `inverse_qft` (and approximate variants),
   * validation against Qiskit's built-in QFT (unitary equality up to global phase),
-  * noise models (depolarizing, phase damping, readout),
+  * noise models (depolarizing, phase damping, readout, and a combined model
+    stacking all three), with a decompose-first runner for the combined case,
   * distribution metrics (total-variation distance, Hellinger fidelity, peak mass),
   * period reconstruction via continued fractions,
   * the manual inverse QFT dropped into an N=15 Shor order-finding circuit.
@@ -211,6 +212,37 @@ def create_readout_noise_model(p_0_to_1, p_1_to_0):
     return noise_model
 
 
+def create_combined_noise_model(
+    one_qubit_error, two_qubit_error, damping_probability, p_0_to_1, p_1_to_0
+):
+    """Stack depolarizing + phase damping + readout into a single NoiseModel.
+
+    The isolated builders above each model one channel; a real device suffers all
+    three at once. On every gate we *compose* the depolarizing and phase-damping
+    channels (depolarizing first, then phase damping) so both act on the same gate,
+    and we add readout error on top for the measurement. This is genuinely new
+    behavior -- you cannot get it by passing different arguments to
+    `create_depolarizing_noise_model`, which only knows how to build depolarizing
+    noise.
+    """
+    noise_model = NoiseModel()
+
+    depolarizing_1 = depolarizing_error(one_qubit_error, 1)
+    phase_1 = phase_damping_error(damping_probability)
+    combined_1 = depolarizing_1.compose(phase_1)
+
+    depolarizing_2 = depolarizing_error(two_qubit_error, 2)
+    phase_2 = phase_1.tensor(phase_1)
+    combined_2 = depolarizing_2.compose(phase_2)
+
+    noise_model.add_all_qubit_quantum_error(combined_1, ["h"])
+    noise_model.add_all_qubit_quantum_error(combined_2, ["cp", "swap", "cx"])
+
+    matrix = [[1 - p_0_to_1, p_0_to_1], [p_1_to_0, 1 - p_1_to_0]]
+    noise_model.add_all_qubit_readout_error(ReadoutError(matrix))
+    return noise_model
+
+
 def get_noise_model(noise_type, noise_level):
     """Dispatch wrapper so experiment sweeps stay clean. 'ideal' -> None."""
     if noise_type == "ideal":
@@ -221,6 +253,16 @@ def get_noise_model(noise_type, noise_level):
         return create_phase_damping_noise_model(noise_level)
     if noise_type == "readout":
         return create_readout_noise_model(noise_level, noise_level)
+    if noise_type == "combined":
+        # A single sweep level drives every channel, so combined and isolated
+        # runs sit on the same x-axis for a like-for-like comparison.
+        return create_combined_noise_model(
+            one_qubit_error=noise_level,
+            two_qubit_error=2 * noise_level,
+            damping_probability=noise_level,
+            p_0_to_1=noise_level,
+            p_1_to_0=noise_level,
+        )
     raise ValueError(f"Unknown noise type: {noise_type}")
 
 
@@ -334,22 +376,61 @@ def build_periodic_iqft_circuit_with_custom_iqft(n, period, iqft_builder, offset
     return circuit
 
 
-def run_measured_circuit(circuit, noise_model=None, shots=SHOTS):
-    """Transpile and run a measured circuit on Aer; return (counts, compiled)."""
+# Basis gates for the "safe" runner. The four noise-targeted names (h, cp, swap,
+# cx) are kept so the noise model still attaches; the rest let the opaque
+# `initialize` instruction unroll into reset + rotations instead of staying a
+# single black-box gate.
+SAFE_BASIS_GATES = ["h", "cp", "swap", "cx", "rz", "ry", "rx", "x", "id", "reset"]
+
+
+def run_measured_circuit(circuit, noise_model=None, shots=SHOTS, seed=RANDOM_SEED):
+    """Transpile and run a measured circuit on Aer; return (counts, compiled).
+
+    `seed` drives both transpilation and simulation; vary it across repetitions to
+    get independent noise realizations (and therefore error bars).
+    """
     backend = AerSimulator(noise_model=noise_model)
     compiled = transpile(
-        circuit, backend, optimization_level=1, seed_transpiler=RANDOM_SEED
+        circuit, backend, optimization_level=1, seed_transpiler=seed
     )
-    result = backend.run(compiled, shots=shots, seed_simulator=RANDOM_SEED).result()
+    result = backend.run(compiled, shots=shots, seed_simulator=seed).result()
     return result.get_counts(), compiled
 
 
-def run_periodic_qft_experiment(n, period, noise_type, noise_level):
-    """Run one known-period inverse-QFT experiment and return a metrics row."""
+def run_measured_circuit_safe(circuit, noise_model=None, shots=SHOTS, seed=RANDOM_SEED):
+    """Like `run_measured_circuit`, but decomposes to basis gates first.
+
+    Necessary, not cosmetic: the combined noise model crashes on the opaque
+    `initialize` instruction (an "empty Kraus" / non-hermitian eigensystem error)
+    because Aer tries to attach noise to a black-box state-prep gate. Transpiling
+    to an explicit basis first (see `SAFE_BASIS_GATES`) unrolls `initialize` into
+    reset + rotations while preserving the noise-targeted gate names, so the model
+    both runs and still applies its errors.
+    """
+    backend = AerSimulator(noise_model=noise_model)
+    compiled = transpile(
+        circuit,
+        backend,
+        basis_gates=SAFE_BASIS_GATES,
+        optimization_level=1,
+        seed_transpiler=seed,
+    )
+    result = backend.run(compiled, shots=shots, seed_simulator=seed).result()
+    return result.get_counts(), compiled
+
+
+def run_periodic_qft_experiment(n, period, noise_type, noise_level, seed=RANDOM_SEED):
+    """Run one known-period inverse-QFT experiment and return a metrics row.
+
+    The combined noise model is routed through `run_measured_circuit_safe`, which
+    it needs to run at all. `seed` lets a caller repeat the same configuration with
+    independent noise draws for error bars.
+    """
+    runner = run_measured_circuit_safe if noise_type == "combined" else run_measured_circuit
     circuit = build_periodic_iqft_circuit(n, period)
-    ideal_counts, _ = run_measured_circuit(circuit, noise_model=None)
+    ideal_counts, _ = runner(circuit, noise_model=None, seed=seed)
     noise_model = get_noise_model(noise_type, noise_level)
-    noisy_counts, noisy_compiled = run_measured_circuit(circuit, noise_model=noise_model)
+    noisy_counts, noisy_compiled = runner(circuit, noise_model=noise_model, seed=seed)
 
     ideal = counts_to_probability_vector(ideal_counts, n)
     noisy = counts_to_probability_vector(noisy_counts, n)
@@ -360,6 +441,7 @@ def run_periodic_qft_experiment(n, period, noise_type, noise_level):
         "period": period,
         "noise_type": noise_type,
         "noise_level": noise_level,
+        "seed": seed,
         "shots": SHOTS,
         "logical_depth": circuit.depth(),
         "transpiled_depth": noisy_compiled.depth(),

@@ -14,7 +14,7 @@ overall factoring success of Shor's algorithm?
 
 | File | Purpose |
 |------|---------|
-| `qft.py` | Library: manual `qft` / `inverse_qft`, approximate variants, validation against Qiskit, noise models, distribution metrics, period reconstruction, and the manual inverse QFT inside an N=15 Shor circuit. |
+| `qft.py` | Library: manual `qft` / `inverse_qft`, approximate variants, validation against Qiskit, isolated **and combined** noise models, distribution metrics, period reconstruction, and the manual inverse QFT inside an N=15 Shor circuit. |
 | `qft_constructions.ipynb` | Runnable walkthrough: builds and draws the circuits, validates them, runs the noise sweep, and plots the results. |
 
 ---
@@ -45,7 +45,12 @@ precision for a shallower circuit.
   with known period `r` into the inverse QFT produces peaks near multiples of
   `2^n / r`, isolating QFT behavior from modular-exponentiation errors.
 - **Noise models** (`get_noise_model`): depolarizing (general gate error), phase
-  damping (loss of phase coherence), and readout error.
+  damping (loss of phase coherence), and readout error — each in isolation, plus a
+  **combined** model (`create_combined_noise_model`) that stacks all three at once
+  (depolarizing and phase damping *composed* on every gate, readout on top), the way
+  a real device sees them. The robustness sweep runs **3–7 qubits** over a wider,
+  finer noise range with **repeated noise draws** so the plots carry error bars, and
+  a dedicated section compares the combined model against each isolated channel.
 - **Distribution metrics**: total-variation distance and Hellinger fidelity
   measure global histogram change; `peak_probability` and
   `estimated_period_success_from_distribution` measure whether the output is
@@ -77,5 +82,10 @@ directory.
 
 - Built and tested with Qiskit 2.x and `qiskit-aer`.
 - The noise sweep organizes its results with Polars.
+- The combined noise model crashes on the opaque `initialize` instruction (an
+  "empty Kraus" / non-hermitian eigensystem error). `run_measured_circuit_safe`
+  fixes this by transpiling to explicit basis gates first — unrolling `initialize`
+  into reset + rotations while keeping the noise-targeted gate names intact.
+  `run_periodic_qft_experiment` selects it automatically for `noise_type='combined'`.
 - The manual inverse QFT here is the same construction used (in-place) by the
   [Shor implementation](../shors/shor_factoring.py).
